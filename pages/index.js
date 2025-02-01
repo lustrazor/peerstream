@@ -259,32 +259,41 @@ To view the stream:
 
     const iceConfig = {
       iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
-        { urls: 'stun:stun3.l.google.com:19302' },
-        { urls: 'stun:stun4.l.google.com:19302' },
-        // Add a free TURN server - you should replace this with your own TURN server in production
-        {
-          urls: 'turn:openrelay.metered.ca:80',
-          username: 'openrelayproject',
-          credential: 'openrelayproject'
+        { 
+          urls: [
+            'stun:stun.l.google.com:19302',
+            'stun:stun1.l.google.com:19302',
+            'stun:stun2.l.google.com:19302'
+          ]
         },
         {
-          urls: 'turn:openrelay.metered.ca:443',
+          // Metered TURN servers
+          urls: [
+            'turn:a.relay.metered.ca:80',
+            'turn:a.relay.metered.ca:80?transport=tcp',
+            'turn:a.relay.metered.ca:443',
+            'turn:a.relay.metered.ca:443?transport=tcp'
+          ],
           username: 'openrelayproject',
           credential: 'openrelayproject'
         }
       ],
       iceCandidatePoolSize: 10,
-      iceTransportPolicy: 'all'
+      iceTransportPolicy: 'all',
+      bundlePolicy: 'max-bundle',
+      rtcpMuxPolicy: 'require'
     };
 
     const peer = new SimplePeer({
       initiator: isStreamer,
       stream: streamRef.current,
-      trickle: true, // Enable trickle ICE
-      config: iceConfig
+      trickle: true,
+      config: iceConfig,
+      sdpTransform: (sdp) => {
+        // Force VP8 codec and reasonable bitrates
+        return sdp.replace(/a=mid:video\r\n/g, 
+          'a=mid:video\r\nb=AS:2000\r\nb=TIAS:2000000\r\n');
+      }
     });
 
     peer.on('signal', (signal) => {
@@ -296,10 +305,26 @@ To view the stream:
     });
 
     peer.on('connect', () => {
-      setStats(prev => prev + '\nPeer connection established with: ' + userId);
+      console.log('Peer connection established');
+      setStats(prev => prev + '\nPeer connection established');
     });
 
     peer.on('stream', (stream) => {
+      console.log('Received stream:', {
+        video: stream.getVideoTracks().map(t => ({
+          enabled: t.enabled,
+          muted: t.muted,
+          readyState: t.readyState,
+          constraints: t.getConstraints()
+        })),
+        audio: stream.getAudioTracks().map(t => ({
+          enabled: t.enabled,
+          muted: t.muted,
+          readyState: t.readyState,
+          constraints: t.getConstraints()
+        }))
+      });
+      
       setStats(prev => prev + '\nReceived remote stream from: ' + userId);
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
@@ -313,16 +338,28 @@ To view the stream:
     peer.on('iceStateChange', (state) => {
       console.log('ICE state:', state);
       setStats(prev => prev + '\nICE state: ' + state);
+      
+      if (state === 'disconnected' || state === 'failed') {
+        console.log('Attempting to restart ICE');
+        peer.restartIce();
+      }
     });
 
     peer.on('error', (err) => {
       console.error('Peer error:', err);
       setStats(prev => prev + '\nPeer error: ' + err.message);
-      // Don't immediately clean up - give it a chance to recover
+      
       if (err.code === 'ERR_ICE_CONNECTION_FAILURE') {
+        console.log('ICE connection failed, attempting restart');
+        peer.restartIce();
+        
+        // Set a timeout for cleanup if restart fails
         setTimeout(() => {
-          cleanupPeerConnection(userId);
-        }, 5000);
+          if (peer.iceConnectionState === 'failed') {
+            console.log('ICE restart failed, cleaning up connection');
+            cleanupPeerConnection(userId);
+          }
+        }, 10000);
       }
     });
 
