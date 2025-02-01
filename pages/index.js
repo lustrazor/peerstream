@@ -257,16 +257,34 @@ To view the stream:
     // Cleanup any existing connection with this peer
     cleanupPeerConnection(userId);
 
+    const iceConfig = {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+        { urls: 'stun:stun3.l.google.com:19302' },
+        { urls: 'stun:stun4.l.google.com:19302' },
+        // Add a free TURN server - you should replace this with your own TURN server in production
+        {
+          urls: 'turn:openrelay.metered.ca:80',
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        },
+        {
+          urls: 'turn:openrelay.metered.ca:443',
+          username: 'openrelayproject',
+          credential: 'openrelayproject'
+        }
+      ],
+      iceCandidatePoolSize: 10,
+      iceTransportPolicy: 'all'
+    };
+
     const peer = new SimplePeer({
       initiator: isStreamer,
       stream: streamRef.current,
-      trickle: false,
-      config: {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:global.stun.twilio.com:3478' }
-        ]
-      }
+      trickle: true, // Enable trickle ICE
+      config: iceConfig
     });
 
     peer.on('signal', (signal) => {
@@ -292,10 +310,20 @@ To view the stream:
       }
     });
 
+    peer.on('iceStateChange', (state) => {
+      console.log('ICE state:', state);
+      setStats(prev => prev + '\nICE state: ' + state);
+    });
+
     peer.on('error', (err) => {
-      setStats(prev => prev + '\nPeer error with ' + userId + ': ' + err.message);
-      setIsLoading(false);
-      cleanupPeerConnection(userId);
+      console.error('Peer error:', err);
+      setStats(prev => prev + '\nPeer error: ' + err.message);
+      // Don't immediately clean up - give it a chance to recover
+      if (err.code === 'ERR_ICE_CONNECTION_FAILURE') {
+        setTimeout(() => {
+          cleanupPeerConnection(userId);
+        }, 5000);
+      }
     });
 
     peer.on('close', () => {
